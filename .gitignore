@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+
+# QA run outputs (transcripts, wire dumps)
+*.ndjson
+*.log
