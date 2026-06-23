@@ -115,10 +115,15 @@ regression from Squad's normal weirdness.
 
 ### Connection / session behavior
 
-- **`MaxConnectionsFromSameHost` (RCON.cfg): exceeding it drops ALL sessions from
-  that host, not just the newest one.** Multiple admin tools from one host fight
-  for slots. Test this with a dedicated multi-connection tester (this tool holds
-  a single connection).
+- **`MaxConnectionsFromSameHost` (RCON.cfg) is a per-host fixed-size sliding
+  window (FIFO).** A new connection over the limit evicts the *oldest* session
+  from that host (one at a time, until it fits) and itself succeeds — it does
+  NOT drop all sessions, nor does it reject the new one. Example with limit 2:
+  conn 1 ok, conn 2 ok, conn 3 ok + drops conn 1, conn 4 ok + drops conn 2.
+  Clients that auto-reconnect (SquadJS) turn this into a reconnect storm: the
+  evicted oldest reconnects, which evicts the next oldest, and so on — the real
+  reason to run a single shared RCON session. Test with a dedicated
+  multi-connection tester (this tool holds a single connection).
 - **Failed auth replies with packet id `-1`.**
 - **Commands must be serialized.** Concurrent commands race because replies are
   matched by id; send one at a time.
