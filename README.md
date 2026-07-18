@@ -87,8 +87,14 @@ regression from Squad's normal weirdness.
 
 - **Squad RCON is UE4 RCON, not Valve Source RCON.** Unsolicited server push
   messages use packet type `0x01`; replies to your command use type `0x00`.
-- **Empty end-of-response packets carry a 7-byte follow-response blob.** Must be
-  consumed or the byte stream desyncs.
+- **Empty end-of-response packets carry a 7-byte follow-response blob — and the
+  blob can land in a later TCP read than the packet it trails.** An empty
+  response can't be classified (end-of-response marker vs follow-response)
+  until the next 7 bytes are buffered. Consuming it early strands the blob at
+  the buffer head, where it parses as a garbage size field and desyncs framing
+  for the rest of the connection — seen live as an RCON session going
+  permanently deaf on an open socket while writes still succeed. This tool
+  waits for the disambiguating bytes before consuming any empty response.
 - **Multi-packet responses.** A command reply can span several packets; the end
   is signalled by sending an empty sentinel packet with the same id and reading
   until the empty reply comes back.
