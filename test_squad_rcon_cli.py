@@ -50,6 +50,26 @@ def test_follow_response_blob_is_consumed() -> None:
     assert consumed == len(empty) + len(FOLLOW_RESPONSE_BODY)
 
 
+def test_empty_response_waits_for_trailing_bytes() -> None:
+    # An empty RESPONSE_VALUE packet is ambiguous until the next 7 bytes
+    # arrive: consuming it early strands the follow-response blob at the
+    # buffer head and permanently desyncs framing (seen live as an RCON
+    # session going deaf on an open socket).
+    empty = encode_packet(PacketType.RESPONSE_VALUE, 3, "")
+
+    # No trailing bytes yet — wait, don't consume
+    assert decode_packet(empty) is None
+
+    # Partial blob — still wait
+    assert decode_packet(empty + FOLLOW_RESPONSE_BODY[:3]) is None
+
+    # Trailing bytes are the start of a real packet — consume as end marker
+    next_packet = encode_packet(PacketType.RESPONSE_VALUE, 4, "next")
+    decoded, consumed = _decode(empty + next_packet)
+    assert decoded.is_follow_response is False
+    assert consumed == len(empty)
+
+
 def test_partial_packet_returns_none() -> None:
     # A response can span multiple TCP reads; an incomplete buffer must decode to
     # None (wait for more) rather than raise or return garbage.
@@ -93,6 +113,7 @@ if __name__ == "__main__":
     test_encode_decode_roundtrip()
     test_unicode_body_survives()
     test_follow_response_blob_is_consumed()
+    test_empty_response_waits_for_trailing_bytes()
     test_partial_packet_returns_none()
     test_multi_packet_buffer()
     test_transcript_log_writes_ndjson()

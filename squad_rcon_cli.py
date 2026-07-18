@@ -96,14 +96,18 @@ def decode_packet(data: bytes) -> tuple[RconPacket, int] | None:
 
     is_follow = False
     consumed = total_length
-    if (
-        body == ""
-        and packet_type == PacketType.RESPONSE_VALUE
-        and len(data) >= total_length + len(FOLLOW_RESPONSE_BODY)
-        and data[total_length : total_length + len(FOLLOW_RESPONSE_BODY)] == FOLLOW_RESPONSE_BODY
-    ):
-        is_follow = True
-        consumed = total_length + len(FOLLOW_RESPONSE_BODY)
+    if body == "" and packet_type == PacketType.RESPONSE_VALUE:
+        # An empty response is either an end-of-response marker or the
+        # follow-response packet, and only the next 7 bytes disambiguate.
+        # Consuming it before they arrive strands the junk blob at the buffer
+        # head, where it parses as a garbage size field and desyncs framing
+        # for the rest of the connection. The server always sends bytes after
+        # an empty response, so waiting cannot stall a live stream.
+        if len(data) < total_length + len(FOLLOW_RESPONSE_BODY):
+            return None
+        if data[total_length : total_length + len(FOLLOW_RESPONSE_BODY)] == FOLLOW_RESPONSE_BODY:
+            is_follow = True
+            consumed = total_length + len(FOLLOW_RESPONSE_BODY)
 
     return RconPacket(packet_id=packet_id, packet_type=packet_type, body=body, is_follow_response=is_follow), consumed
 
