@@ -100,6 +100,14 @@ regression from Squad's normal weirdness.
   until the empty reply comes back.
 - **Large responses span multiple TCP reads.** Buffer until a full packet
   decodes (8 KB read chunks).
+- **The server's 14..4096 packet-size limit applies only to packets it
+  receives, not the ones it sends.** Its own response chunks split at ~4096
+  *characters*, so the size field overshoots in bytes when a body carries
+  multibyte UTF-8 player names (4149 bytes observed live). A client that caps
+  inbound packets at 4096 drops every large `ListPlayers` reply. Legitimate
+  chunks top out near 16 KB (4096 characters at 4 bytes each); a garbage size
+  field from misframed text reads as hundreds of millions, so 64 KB separates
+  the two cleanly.
 
 ### Response content quirks (what to eyeball when verifying an update)
 
@@ -118,6 +126,17 @@ regression from Squad's normal weirdness.
 - **Faction tokens like `RGF+Support`** are single whitespace-delimited tokens.
 - **Squad ID gaps**: squad numbering can be non-contiguous; gaps are real, not a
   bug.
+- **`ShowServerInfo` is cached, not realtime.** It returns the periodically
+  refreshed query blob published to the server browser (~20-30s tick), so its
+  fields lag reality by up to one refresh. After a kick, ban, or team change,
+  `PlayerCount_I` and friends can still report the old value — that is not a
+  regression. Confirm immediate effects with `ListPlayers`/`ListSquads` or the
+  side-effect push line instead. It is reliable for slow-moving config (map,
+  max players, mods, region, factions). Two calls seconds apart can also
+  disagree depending on where they land in the refresh window, so it is a poor
+  regression-diff target despite looking stable.
+- **`ShowServerInfo` integer fields are quoted strings.** The `_I`-suffixed
+  keys in the JSON blob come back as `"PlayerCount_I": "42"`, not numbers.
 
 ### Connection / session behavior
 
@@ -187,7 +206,8 @@ python3 test_squad_rcon_cli.py
 ```
 
 Checks the packet codec (round-trip, unicode, follow-response blob, partial and
-multi-packet buffering) — no server needed.
+multi-packet buffering, oversized reply chunks, garbage size fields) — no
+server needed.
 
 ## License
 

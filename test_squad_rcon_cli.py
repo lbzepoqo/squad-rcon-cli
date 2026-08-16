@@ -1,16 +1,20 @@
 """Self-check for the RCON packet codec. Run: python3 test_squad_rcon_cli.py
 
 No framework — plain asserts. Covers the wire-format quirks that have bitten us
-before: the empty-packet follow-response blob and multi-packet buffering.
+before: the empty-packet follow-response blob, multi-packet buffering, and
+reply chunks larger than the server's own inbound packet limit.
 """
 
 import json
 import os
+import struct
 import tempfile
 
 from squad_rcon_cli import (
     FOLLOW_RESPONSE_BODY,
+    MAX_PACKET_SIZE,
     PacketType,
+    RconProtocolError,
     TranscriptLog,
     decode_packet,
     encode_packet,
@@ -89,6 +93,29 @@ def test_multi_packet_buffer() -> None:
     assert decoded2.body == "second"
 
 
+def test_oversized_reply_chunk_decodes() -> None:
+    # The server's 14..4096 limit applies only to packets it receives. Its own
+    # chunks split at ~4096 characters, so a body of multibyte player names
+    # exceeds 4096 bytes (4149 seen live). Rejecting those drops large
+    # ListPlayers replies.
+    body = "Игрок" * 900  # 4500 characters, 8100 bytes as UTF-8
+    decoded, _ = _decode(encode_packet(PacketType.RESPONSE_VALUE, 5, body))
+    assert decoded.body == body
+
+
+def test_garbage_size_field_is_rejected() -> None:
+    # Misframed text read as a size field lands far outside the plausible range.
+    # Without the bound, a huge value parks the reader waiting for bytes that
+    # never arrive and -4 makes the decoder consume nothing and spin forever.
+    for size in (-4, 9, MAX_PACKET_SIZE + 1, 0x6D6F4361):
+        packet = struct.pack("<iii", size, 1, 0) + b"\x00\x00"
+        try:
+            decode_packet(packet)
+        except RconProtocolError:
+            continue
+        raise AssertionError(f"size {size} should have been rejected")
+
+
 def test_transcript_log_writes_ndjson() -> None:
     # Each record is one valid JSON line with ts/dir/data, and unicode names
     # (which Squad allows) survive round-trip.
@@ -116,5 +143,7 @@ if __name__ == "__main__":
     test_empty_response_waits_for_trailing_bytes()
     test_partial_packet_returns_none()
     test_multi_packet_buffer()
+    test_oversized_reply_chunk_decodes()
+    test_garbage_size_field_is_rejected()
     test_transcript_log_writes_ndjson()
     print("ok — all self-checks passed")

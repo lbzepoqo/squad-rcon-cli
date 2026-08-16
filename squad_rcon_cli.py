@@ -53,6 +53,14 @@ from typing import Callable
 FOLLOW_RESPONSE_BODY = b"\x00\x01\x00\x00\x00\x00\x00"
 PACKET_HEADER_SIZE = 12  # size(4) + id(4) + type(4)
 
+# The server enforces 14..4096 only on packets it receives. Its own replies
+# split at ~4096 characters, so the size field overshoots in bytes on multibyte
+# UTF-8 player names (4149 observed live) and legitimate chunks reach ~16 KB.
+# 64 KB accepts those while rejecting the size fields read out of misframed
+# text, which land in the hundreds of millions or go negative.
+MIN_PACKET_SIZE = 10  # id(4) + type(4) + two nulls, empty body
+MAX_PACKET_SIZE = 65536
+
 
 class PacketType(IntEnum):
     RESPONSE_VALUE = 0
@@ -85,6 +93,8 @@ def decode_packet(data: bytes) -> tuple[RconPacket, int] | None:
     if len(data) < 4:
         return None
     size = struct.unpack_from("<i", data, 0)[0]
+    if not MIN_PACKET_SIZE <= size <= MAX_PACKET_SIZE:
+        raise RconProtocolError(f"Implausible packet size {size}; stream is desynced")
     total_length = size + 4
     if len(data) < total_length:
         return None
@@ -130,6 +140,9 @@ class RconDisconnectedError(RconError):
     pass
 
 class RconCommandTimeoutError(RconError):
+    pass
+
+class RconProtocolError(RconError):
     pass
 
 
