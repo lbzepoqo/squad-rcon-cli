@@ -149,9 +149,17 @@ regression from Squad's normal weirdness.
   evicted oldest reconnects, which evicts the next oldest, and so on — the real
   reason to run a single shared RCON session. Test with a dedicated
   multi-connection tester (this tool holds a single connection).
-- **Failed auth replies with packet id `-1`.**
-- **Commands must be serialized.** Concurrent commands race because replies are
-  matched by id; send one at a time.
+- **A wrong password gets no reply.** The server sends no packet and closes the
+  connection about 250 ms after the auth packet. It does not send an
+  `AUTH_RESPONSE` with id `-1` (Valve Source RCON does). Nothing is written to
+  `LogRCONServer`, and a correct login right after works (no lockout). This
+  tool reports the close during login as `Auth failed`. (Verified live on
+  v10.6.0.685998.3133.)
+- **Concurrent commands are answered in send order.** The server never
+  interleaves the packets of two replies, so several commands can be in
+  flight at once on one connection (verified live: 40 commands in one write,
+  with multi-packet `ListPlayers` replies, all answered in order). This tool
+  matches replies by id, so it does not depend on the order.
 
 ### Team kill / combat events: RCON push vs log parsing
 

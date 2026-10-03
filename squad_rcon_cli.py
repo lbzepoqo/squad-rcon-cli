@@ -322,8 +322,18 @@ class RconClient:
 
     def _on_disconnect(self) -> None:
         self._connected = False
-        for pending in self._pending.values():
-            if not pending.future.done():
+        for request_id, pending in self._pending.items():
+            if pending.future.done():
+                continue
+            if request_id == self._auth_request_id:
+                # Squad answers a wrong password with no reply at all: it closes the connection about 250 ms
+                # after the auth packet (verified live, v10.6). It never sends an AUTH_RESPONSE with id -1.
+                pending.future.set_exception(
+                    RconAuthError(
+                        "Authentication failed: the server closed the connection during login (wrong password?)"
+                    )
+                )
+            else:
                 pending.future.set_exception(RconDisconnectedError("Connection lost"))
         self._pending.clear()
         self._auth_request_id = None

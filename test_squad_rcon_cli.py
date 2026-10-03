@@ -10,10 +10,14 @@ import os
 import struct
 import tempfile
 
+import asyncio
+
 from squad_rcon_cli import (
     FOLLOW_RESPONSE_BODY,
     MAX_PACKET_SIZE,
     PacketType,
+    RconAuthError,
+    RconClient,
     RconProtocolError,
     TranscriptLog,
     decode_packet,
@@ -136,6 +140,77 @@ def test_transcript_log_writes_ndjson() -> None:
             os.remove(path)
 
 
+async def _fake_server(handle_packet):
+    """Local server that decodes client packets and passes each one to handle_packet(writer, packet_id, type, body)."""
+
+    async def on_client(reader, writer):
+        buffer = b""
+        while True:
+            data = await reader.read(8192)
+            if not data:
+                return
+            buffer += data
+            while len(buffer) >= 4 and len(buffer) >= struct.unpack_from("<i", buffer, 0)[0] + 4:
+                size = struct.unpack_from("<i", buffer, 0)[0] + 4
+                packet_id, packet_type = struct.unpack_from("<ii", buffer, 4)
+                body = buffer[12 : size - 2].decode("utf-8")
+                buffer = buffer[size:]
+                if await handle_packet(writer, packet_id, packet_type, body) == "close":
+                    writer.close()
+                    return
+
+    return await asyncio.start_server(on_client, "127.0.0.1", 0)
+
+
+def test_wrong_password_close_is_an_auth_error() -> None:
+    # Squad v10.6 answers a wrong password with no packet: it closes the connection (verified live 2026-10-03).
+    async def scenario():
+        async def handle(writer, packet_id, packet_type, body):
+            await asyncio.sleep(0.25)
+            return "close"
+
+        server = await _fake_server(handle)
+        client = RconClient("127.0.0.1", server.sockets[0].getsockname()[1], "wrong")
+        try:
+            await client.connect()
+        except RconAuthError as error:
+            return str(error)
+        finally:
+            await client.close()
+            server.close()
+        return None
+
+    message = asyncio.run(scenario())
+    assert message is not None and "Authentication failed" in message, message
+
+
+def test_concurrent_commands_answered_in_order() -> None:
+    # The server answers concurrent commands in send order (verified live: 40 commands in one write).
+    async def scenario():
+        async def handle(writer, packet_id, packet_type, body):
+            if packet_type == PacketType.AUTH:
+                writer.write(encode_packet(PacketType.RESPONSE_VALUE, packet_id, ""))
+                writer.write(encode_packet(PacketType.AUTH_RESPONSE, packet_id, ""))
+            elif body:
+                writer.write(encode_packet(PacketType.RESPONSE_VALUE, packet_id, f"reply to {body}"))
+            else:
+                end = encode_packet(PacketType.RESPONSE_VALUE, packet_id, "")
+                writer.write(end + end + FOLLOW_RESPONSE_BODY)
+            await writer.drain()
+
+        server = await _fake_server(handle)
+        client = RconClient("127.0.0.1", server.sockets[0].getsockname()[1], "x")
+        try:
+            await client.connect()
+            return await asyncio.gather(*(client.execute(f"Command{index}") for index in range(40)))
+        finally:
+            await client.close()
+            server.close()
+
+    replies = asyncio.run(scenario())
+    assert replies == [f"reply to Command{index}" for index in range(40)], replies[:3]
+
+
 if __name__ == "__main__":
     test_encode_decode_roundtrip()
     test_unicode_body_survives()
@@ -146,4 +221,6 @@ if __name__ == "__main__":
     test_oversized_reply_chunk_decodes()
     test_garbage_size_field_is_rejected()
     test_transcript_log_writes_ndjson()
+    test_wrong_password_close_is_an_auth_error()
+    test_concurrent_commands_answered_in_order()
     print("ok — all self-checks passed")
