@@ -98,6 +98,17 @@ regression from Squad's normal weirdness.
 - **Multi-packet responses.** A command reply can span several packets; the end
   is signalled by sending an empty sentinel packet with the same id and reading
   until the empty reply comes back.
+- **Packets split in the middle of a line.** Join the packet bodies with
+  nothing between them, then split into lines. In the live captures, 17 data
+  packets of `ListPlayers` replies ended mid-line. A client that joins with a
+  separator (SquadJS used `,` until 2026-10) corrupts the line at each packet
+  boundary.
+- **Request ids are echoed exactly.** Data packets carry the id of the command,
+  and the two empty packets carry the id of the empty sentinel command
+  (verified with plain 32-bit ids). Route replies by id; do not compute the
+  owner of a reply from an offset.
+- **Identify the 7-byte follow-response blob by its exact bytes**
+  (`00 01 00 00 00 00 00`), never by size alone. Short push messages exist.
 - **Large responses span multiple TCP reads.** Buffer until a full packet
   decodes (8 KB read chunks).
 - **The server's 14..4096 packet-size limit applies only to packets it
@@ -119,7 +130,14 @@ regression from Squad's normal weirdness.
   `[Online IDs:...]`; kick/ban pushes use `[Online IDs=...]`.
 - **Player names are freeform UTF-8** and can contain pipes (`|`) and the same
   characters used as delimiters. Don't assume a name is ASCII or pipe-free.
-- **Trailing comma** appears on some role fields.
+- **No trailing comma on the wire.** Older notes say role fields can end in
+  `,`. The raw captures show 270 player lines and none ends in a comma; the
+  comma came from SquadJS joining packets with `,` (see above).
+- **Squad 10.6 extended `ListPlayers`.** Lines now carry
+  `| Party ID: ...` after the team, and `| Vehicle: <name> (<seat>)` or
+  `| Vehicle: N/A` after the role, for example
+  `Vehicle: BAF_LPPV (Driver)`. Parsers written for older versions do not match
+  these lines at all, because `Party ID` sits between `Team ID` and `Squad ID`.
 - **`N/A`** shows up for squad/team when a player is unassigned.
 - **ShowNextMap returns the literal string `not defined`** (not an empty reply)
   when no next map is set.
@@ -160,6 +178,31 @@ regression from Squad's normal weirdness.
   flight at once on one connection (verified live: 40 commands in one write,
   with multi-packet `ListPlayers` replies, all answered in order). This tool
   matches replies by id, so it does not depend on the order.
+- **Reply times are short, so a timeout is safe.** Over 134,461 recorded
+  replies on a server with about 100 players: p99 83 ms, p99.9 234 ms, maximum
+  2.6 s (`AdminWarn`), none over 3 s. A 10 s command timeout never fires on a
+  healthy session. Without a timeout, one missing reply leaves the command
+  waiting forever; a client that pairs replies by order also gives every later
+  reply to the wrong command.
+- **RCON refuses connections while the game server restarts.** Expect
+  `ECONNREFUSED` for about 10 s while the game server restarts (for example
+  at a scheduled daily restart). A reconnecting client must treat a failed attempt as "try again
+  later", not as a fatal error.
+
+### Client pitfalls seen in real clients
+
+Each of these was found in a client used in production (SquadJS, or an RCON
+module used in place of its own), so a new client should test for them:
+
+- A wrong password resolved as a successful login, so the client never
+  reconnected.
+- One `error` listener added to the socket per pending command, which leaks
+  listeners under load (`MaxListenersExceededWarning`).
+- Commands sent without awaiting the result, so any connection drop became an
+  unhandled rejection and ended the process.
+- A failed reconnect attempt that was not caught, which also ended the process.
+- Reply routing by `id - 2`, which gives each reply to the command sent two
+  earlier on Squad 10.6.
 
 ### Team kill / combat events: RCON push vs log parsing
 
